@@ -21,9 +21,9 @@ EXPOSE 22
 FROM ubuntu:18.04 AS builder
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt install -y cmake build-essential zlib1g-dev libopenmpi-dev git wget unzip build-essential zlib1g-dev iproute2 cmake python python-pip build-essential gfortran wget curl
-#ADD hordesat hordesat
-RUN git clone https://github.com/biotomas/hordesat
-RUN cd hordesat && ./makehordesat.sh
+ADD . /hordesat
+RUN cd /hordesat && git submodule update --init --recursive
+RUN cd /hordesat/hordesat && make -C hordesat-src
 ################
 FROM horde_base AS horde_liaison
 RUN apt-get update \

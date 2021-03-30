@@ -17,23 +17,32 @@ WORKDIR /home/horde
 ENV NOTVISIBLE "in users profile"
 RUN echo "export VISIBLE=now" >> /etc/profile
 EXPOSE 22
+
+
 ################
 FROM ubuntu:18.04 AS builder
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt install -y cmake build-essential zlib1g-dev libopenmpi-dev git wget unzip build-essential zlib1g-dev iproute2 cmake python python-pip build-essential gfortran wget curl
-ADD . /hordesat
-RUN cd /hordesat && git submodule update --init --recursive
-RUN cd /hordesat/hordesat && make -C hordesat-src
+ADD . /opt/hordesat
+RUN cd /opt/hordesat && git submodule update --init --recursive
+RUN cd /opt/hordesat/hordesat && make -C hordesat-src
+
+
 ################
 FROM horde_base AS horde_liaison
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt install -y awscli python3 mpi
-COPY --from=builder /hordesat/hordesat /hordesat/hordesat
-ADD make_combined_hostfile.py supervised-scripts/make_combined_hostfile.py
-RUN chmod 755 supervised-scripts/make_combined_hostfile.py
-ADD mpi-run.sh supervised-scripts/mpi-run.sh
+
+# make hordesat available as /hordesat/hordesat
+COPY --from=builder /opt/hordesat/hordesat /hordesat/
+
+# copy scripts from this repository into the home directory of the 'horde' user
+ADD make_combined_hostfile.py /home/horde/make_combined_hostfile.py
+RUN chmod 755 /home/horde/make_combined_hostfile.py
+ADD mpi-run.sh /home/horde/mpi-run.sh
 USER horde
 CMD ["/usr/sbin/sshd", "-D", "-f", "/home/horde/.ssh/sshd_config"]
-CMD supervised-scripts/mpi-run.sh
 
-
+RUN ls /home/horde/*
+RUN ls /hordesat/*
+CMD /home/horde/mpi-run.sh

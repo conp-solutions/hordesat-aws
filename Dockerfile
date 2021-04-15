@@ -23,8 +23,23 @@ EXPOSE 22
 FROM ubuntu:18.04 AS builder
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt install -y cmake build-essential zlib1g-dev libopenmpi-dev git wget unzip build-essential zlib1g-dev iproute2 cmake python python-pip build-essential gfortran wget curl
-ADD . /opt/hordesat
-RUN cd /opt/hordesat && git submodule update --init --recursive
+
+# pick a hordesat repository
+ARG HORDESAT_REPO=https://github.com/conp-solutions/hordesat
+# default value should be: origin/master
+ARG HORDESAT_BRANCH=origin/master
+
+RUN mkdir -p /opt/hordesat
+# either use the local version
+# ADD . /opt/hordesat
+# or use a fresh remote clone, where we at least control the repository and commit
+RUN git clone $HORDESAT_REPO /opt/hordesat/hordesat
+RUN cd /opt/hordesat/hordesat && git remote -v
+RUN cd /opt/hordesat/hordesat && git checkout $HORDESAT_BRANCH
+RUN cd /opt/hordesat/hordesat && git log --decorate --pretty=oneline --graph | head -n 10
+RUN cd /opt/hordesat/hordesat && git submodule update --init --recursive
+
+# build the solver
 RUN cd /opt/hordesat/hordesat && make -C hordesat-src
 
 

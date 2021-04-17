@@ -3,32 +3,70 @@
 
 PATH="$PATH:/opt/openmpi/bin/"
 BASENAME="${0##*/}"
+
+# location of this script to call related tools
+SCRIPT=$(readlink -e "$0")
+SCRIPTDIR=$(dirname "$SCRIPT")
+
+# Default location is defined by environment variable INPUT_CNF
+INPUT_CNF="${INPUT_CNF:-}"
+SOLVER_TIMEOUT_S="${SOLVER_TIMEOUT_S:-28800}"
+declare -a BASE_SOLVER=("/hordesat/hordesat-src/hordesat" "-t=${SOLVER_TIMEOUT_S}")
+
+
 log () {
   echo "${BASENAME} - ${1}"
 }
+
 HOST_FILE_PATH="/tmp/hostfile"
-#aws s3 cp $S3_INPUT $SCRATCH_DIR
-#tar -xvf $SCRATCH_DIR/*.tar.gz -C $SCRATCH_DIR
 
-sleep 2
-echo main node: ${AWS_BATCH_JOB_MAIN_NODE_INDEX}
-echo this node: ${AWS_BATCH_JOB_NODE_INDEX}
-echo Downloading problem from S3: ${COMP_S3_PROBLEM_PATH}
+# Be able to handle local input, outside of AWS batch
+NODE_TYPE="single"
 
-if [[ "${COMP_S3_PROBLEM_PATH}" == *".xz" ]];
+# If no local CNF, allow to participate in AWS BATCH cluser
+if [ -z "$INPUT_CNF" ]
 then
-  aws s3 cp s3://${S3_BKT}/${COMP_S3_PROBLEM_PATH} test.cnf.xz
-  unxz test.cnf.xz
+    if ! command -v aws &> /dev/null
+    then
+        echo "error: cannot find tool 'aws', abort"
+        exit 1
+    fi
+
+    echo "Downloading problem from S3: ${COMP_S3_PROBLEM_PATH}"
+    if [[ "${COMP_S3_PROBLEM_PATH}" == *".xz" ]];
+    then
+      aws s3 cp s3://${S3_BKT}/${COMP_S3_PROBLEM_PATH} test.cnf.xz
+      unxz test.cnf.xz
+    else
+      aws s3 cp s3://${S3_BKT}/${COMP_S3_PROBLEM_PATH} test.cnf
+    fi
+    INPUT_CNF=$(readlink -e test.cnf)
+
+    # evaluate AWS
+    sleep 2
+    AWS_BATCH_JOB_MAIN_NODE_INDEX="${AWS_BATCH_JOB_MAIN_NODE_INDEX:-}"
+    AWS_BATCH_JOB_NODE_INDEX="${AWS_BATCH_JOB_NODE_INDEX:-}"
+
+    # if AWS_BATCH variables are set, use them to evaluate own position in MPI
+    if [ -n "$AWS_BATCH_JOB_MAIN_NODE_INDEX" ] || [ -n "$AWS_BATCH_JOB_NODE_INDEX" ]
+    then
+        echo main node: ${AWS_BATCH_JOB_MAIN_NODE_INDEX}
+        echo this node: ${AWS_BATCH_JOB_NODE_INDEX}
+        # Set child by default switch to main if on main node container
+        NODE_TYPE="child"
+        if [ "${AWS_BATCH_JOB_MAIN_NODE_INDEX}" == "${AWS_BATCH_JOB_NODE_INDEX}" ]; then
+          log "Running synchronize as the main node"
+          NODE_TYPE="main"
+        fi
+    fi
 else
-  aws s3 cp s3://${S3_BKT}/${COMP_S3_PROBLEM_PATH} test.cnf
+    # if we are not in an AWS batch cluster, assume we are the only node
+    AWS_BATCH_JOB_MAIN_NODE_INDEX="1"
+    AWS_BATCH_JOB_NODE_INDEX="1"
+    AWS_BATCH_JOB_NUM_NODES="1"
 fi
 
-# Set child by default switch to main if on main node container
-NODE_TYPE="child"
-if [ "${AWS_BATCH_JOB_MAIN_NODE_INDEX}" == "${AWS_BATCH_JOB_NODE_INDEX}" ]; then
-  log "Running synchronize as the main node"
-  NODE_TYPE="main"
-fi
+
 
 # wait for all nodes to report
 wait_for_nodes () {
@@ -56,11 +94,21 @@ wait_for_nodes () {
 
   # All of the hosts report their IP and number of processors. Combine all these
   # into one file with the following script:
-  supervised-scripts/make_combined_hostfile.py ${ip}
+  "$SCRIPTDIR"/make_combined_hostfile.py ${ip}
   cat combined_hostfile
 
   # REPLACE THE FOLLOWING LINE WITH YOUR PARTICULAR SOLVER
-  time mpirun --mca btl_tcp_if_include eth0 --allow-run-as-root -np ${AWS_BATCH_JOB_NUM_NODES} --hostfile combined_hostfile /hordesat/hordesat  -c=${NUM_PROCESSES} -t=28800 -d=7 test.cnf
+  time mpirun --mca btl_tcp_if_include eth0 --allow-run-as-root -np ${AWS_BATCH_JOB_NUM_NODES} --hostfile combined_hostfile \
+      "${BASE_SOLVER[@]}" "$INPUT_CNF"
+}
+
+
+# solve CNF in INPUT_CNF
+solve_single ()
+{
+    # hordesat will automatically pick the number of available cores
+    "${BASE_SOLVER[@]}" "$INPUT_CNF"
+    return $?
 }
 
 # Fetch and run a script
@@ -92,12 +140,17 @@ log $NODE_TYPE
 case $NODE_TYPE in
   main)
     wait_for_nodes "${@}"
+    exit $?
     ;;
 
   child)
     report_to_master "${@}"
+    exit $?
     ;;
-
+  single)
+    solve_single "${@}"
+    exit $?
+    ;;
   *)
     log $NODE_TYPE
     usage "Could not determine node type. Expected (main/child)"
